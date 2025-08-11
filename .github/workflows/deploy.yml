@@ -31,30 +31,16 @@ jobs:
       with:
         terraform_version: ${{ env.TF_VERSION }}
     - name: Terraform Format Check
-      id: fmt
-      run: terraform fmt -check
-      continue-on-error: true
-    - name: Terraform Init
-      id: init
-      run: terraform init
-    - name: Terraform Validate
-      id: validate
-      run: terraform validate -no-color
-    - name: Terraform Format Check
-      id: fmt
       run: terraform fmt -check
       continue-on-error: true
       working-directory: terraform
     - name: Terraform Init
-      id: init
       run: terraform init
       working-directory: terraform
     - name: Terraform Validate
-      id: validate
       run: terraform validate -no-color
       working-directory: terraform
     - name: Terraform Plan
-      id: plan
       if: github.event_name == 'pull_request'
       run: terraform plan -no-color -input=false
       continue-on-error: true
@@ -65,7 +51,6 @@ jobs:
       working-directory: terraform
     - name: Get Load Balancer URL
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      id: lb_url
       run: |
         LB_URL=$(terraform output -raw load_balancer_url)
         echo "url=$LB_URL" >> $GITHUB_OUTPUT
@@ -78,7 +63,7 @@ jobs:
         sleep 60
         echo "Testing application availability..."
         for i in {1..10}; do
-          if curl -f "${{ steps.lb_url.outputs.url }}"; then
+          if curl -f "$LB_URL"; then
             echo "Application is responding!"
             break
           else
