@@ -1,0 +1,559 @@
+Praktické cvičení - Lekce 7
+[DevOps Engineer]
+
+Počet bodů: 10 + možnost bonusových 5
+Deadline: 12.08.2025
+
+Vytvořte kompletní deployment pipeline pro nginx aplikaci běžící na AWS ECS s následujícími požadavky:
+Infrastruktura (Terraform) (10 bodů):
+    1. VPC s public/private subnety – můžete použít existujici VPC pomocí konstrukce “data”
+    2. ECS Cluster (Fargate)
+    3. ECS Service s 1 běžící task
+    4. Task Definition pro nginx:alpine
+    5. Security Groups s odpovídajícími pravidly
+    6. Application Load Balancer s target group a listener
+CI/CD Pipeline (GitHub Actions) (5 bodů) – volitelná část:
+    1. Terraform deployment na push do main branch
+    2. AWS credentials configuration
+    3. Terraform state management (S3 backend)
+    4. Output ALB DNS name pro testování
+Požadavky:
+    • Nginx musí být dostupný z internetu přes load balancer
+    • Použijte Fargate launch type
+    • Task Definition s 256 CPU a 512 MB memory
+    • Health check endpoint /
+    • Všechna infrastruktura jako kód
+
+Ukázky kódu:
+1. Terraform - main.tf
+# Provider configuration
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  
+  backend "s3" {
+# bucket vytvořit ručně např. přes AWS console služba S3 -> create. Jméno musí být unikátní např. tfstate-<číslo aws účtu>-eu-central-1
+    bucket = "your-terraform-state-bucket"
+    key    = "ecs-demo/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# Variables
+variable "aws_region" {
+  default = "us-east-1"
+}
+
+variable "project_name" {
+  default = "ecs-nginx-demo"
+}
+
+# Data sources
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# pro účely úkolu použijeme existujici default VPC. V reálné aplikaci použijeme VPC vlastní.
+data "aws_vpc" "myvpc" {
+
+  default = true
+}
+
+data "aws_subnets" "albsubnets" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.myvpc.id]
+  }
+}
+
+# pro účely úkolu použijeme stejné subnets. V praxi použijeme různé subnets pro ALB a ECS tasks.
+data "aws_subnets" "ecssubnets" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.myvpc.id]
+  }
+}
+
+# Security Groups
+resource "aws_security_group" "alb" {
+  name        = "${var.project_name}-alb-sg"
+  description = "Security group for ALB"
+  vpc_id      = data.aws_vpc.myvpc.id
+  
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  tags = {
+    Name = "${var.project_name}-alb-sg"
+  }
+}
+
+resource "aws_security_group" "ecs_tasks" {
+  name        = "${var.project_name}-ecs-tasks-sg"
+  description = "Security group for ECS tasks"
+  vpc_id      = data.aws_vpc.myvpc.id
+  
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  tags = {
+    Name = "${var.project_name}-ecs-tasks-sg"
+  }
+}
+
+# Application Load Balancer
+# Application Load Balancer
+resource "aws_lb" "main" {
+  name               = "${var.project_name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = data.aws_subnets.albsubnets.ids
+  
+  tags = {
+    Name = "${var.project_name}-alb"
+  }
+}
+
+resource "aws_lb_target_group" "main" {
+  name     = "${var.project_name}-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = data.aws_vpc.myvpc.id
+  target_type = "ip"
+
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "${var.project_name}-tg"
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.main.arn
+  }
+}
+
+
+# ecs
+resource "aws_ecs_cluster" "lesson7" {
+  name = "lesson7"
+}
+
+resource "aws_ecs_task_definition" "lesson7" {
+  family                   = "lesson7"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+
+  container_definitions = jsonencode([
+    {
+      name      = "web"
+      image     = "nginx:latest"
+      portMappings = [
+        {
+          containerPort = 80
+          hostPort      = 80
+          protocol      = "tcp"
+        }
+      ]
+    }
+  ])
+}
+
+resource "aws_ecs_service" "lesson7" {
+  name            = "lesson7"
+  cluster        = aws_ecs_cluster.lesson7.id
+  task_definition = aws_ecs_task_definition.lesson7.arn
+  desired_count   = 1
+
+  launch_type = "FARGATE"
+
+  network_configuration {
+    subnets          = [data.aws_subnets.ecssubnets.ids[0], data.aws_subnets.ecssubnets.ids[1]]
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = true
+  }
+
+    load_balancer {
+        target_group_arn = aws_lb_target_group.main.arn
+        container_name   = "web"
+        container_port   = 80
+    }
+}
+
+
+resource "aws_lb_target_group" "nginx" {
+  name        = "\${var.project_name}-tg"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+  
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    timeout             = 5
+    interval            = 30
+    path                = "/"
+    matcher             = "200"
+  }
+  
+  tags = {
+    Name = "\${var.project_name}-tg"
+  }
+}
+
+resource "aws_lb_listener" "nginx" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = "80"
+  protocol          = "HTTP"
+  
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.nginx.arn
+  }
+}
+
+# ECS Cluster
+resource "aws_ecs_cluster" "main" {
+  name = "\${var.project_name}-cluster"
+  
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+  
+  tags = {
+    Name = "\${var.project_name}-cluster"
+  }
+}
+
+# IAM Role for ECS Task Execution
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "\${var.project_name}-ecs-task-execution-role"
+  
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "nginx" {
+  name              = "/ecs/\${var.project_name}"
+  retention_in_days = 7
+  
+  tags = {
+    Name = "\${var.project_name}-logs"
+  }
+}
+
+# ECS Task Definition
+resource "aws_ecs_task_definition" "nginx" {
+  family                   = "\${var.project_name}-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  
+  container_definitions = jsonencode([
+    {
+      name  = "nginx"
+      image = "nginx:alpine"
+      
+      portMappings = [
+        {
+          containerPort = 80
+          protocol      = "tcp"
+        }
+      ]
+      
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.nginx.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+      
+      essential = true
+    }
+  ])
+  
+  tags = {
+    Name = "\${var.project_name}-task"
+  }
+}
+
+# ECS Service
+resource "aws_ecs_service" "nginx" {
+  name            = "\${var.project_name}-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.nginx.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+  
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = true
+  }
+  
+  load_balancer {
+    target_group_arn = aws_lb_target_group.nginx.arn
+    container_name   = "nginx"
+    container_port   = 80
+  }
+  
+  depends_on = [aws_lb_listener.nginx]
+  
+  tags = {
+    Name = "\${var.project_name}-service"
+  }
+}
+
+# Outputs
+output "load_balancer_dns" {
+  description = "DNS name of the load balancer"
+  value       = aws_lb.main.dns_name
+}
+
+output "load_balancer_url" {
+  description = "URL of the load balancer"
+  value       = "http://\${aws_lb.main.dns_name}"
+}
+2. GitHub Actions - .github/workflows/deploy.yml
+name: Deploy ECS Infrastructure
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: 1.5.0
+
+jobs:
+  terraform:
+    name: 'Terraform'
+    runs-on: ubuntu-latest
+    
+    # Nastavení permissions pro OIDC
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: \${{ env.AWS_REGION }}
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: \${{ env.TF_VERSION }}
+    
+    - name: Terraform Format Check
+      id: fmt
+      run: terraform fmt -check
+      continue-on-error: true
+    
+    - name: Terraform Init
+      id: init
+      run: terraform init
+    
+    - name: Terraform Validate
+      id: validate
+      run: terraform validate -no-color
+    
+    - name: Terraform Plan
+      id: plan
+      if: github.event_name == 'pull_request'
+      run: terraform plan -no-color -input=false
+      continue-on-error: true
+    
+    - name: Update Pull Request
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      env:
+        PLAN: "terraform\n\${{ steps.plan.outputs.stdout }}"
+      with:
+        github-token: \${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const output = `#### Terraform Format and Style 🖌\`\${{ steps.fmt.outcome }}\`
+          #### Terraform Initialization ⚙️\`\${{ steps.init.outcome }}\`
+          #### Terraform Validation 🤖\`\${{ steps.validate.outcome }}\`
+          #### Terraform Plan 📖\`\${{ steps.plan.outcome }}\`
+          
+          <details><summary>Show Plan</summary>
+          
+          \`\`\`\n
+          \${process.env.PLAN}
+          \`\`\`
+          
+          </details>
+          
+          *Pushed by: @\${{ github.actor }}, Action: \`\${{ github.event_name }}\`*`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          })
+    
+    - name: Terraform Plan Status
+      if: steps.plan.outcome == 'failure'
+      run: exit 1
+    
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: terraform apply -auto-approve -input=false
+    
+    - name: Get Load Balancer URL
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      id: lb_url
+      run: |
+        LB_URL=\$(terraform output -raw load_balancer_url)
+        echo "url=\$LB_URL" >> \$GITHUB_OUTPUT
+        echo "Load Balancer URL: \$LB_URL"
+    
+    - name: Test Application
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        echo "Waiting for ECS service to be stable..."
+        sleep 60
+        
+        echo "Testing application availability..."
+        for i in {1..10}; do
+          if curl -f "\${{ steps.lb_url.outputs.url }}"; then
+            echo "Application is responding!"
+            break
+          else
+            echo "Attempt \$i failed, retrying in 30 seconds..."
+            sleep 30
+          fi
+        done
+3. Terraform variables - terraform.tfvars
+aws_region   = "us-east-1"
+project_name = "my-ecs-demo"
+4. README.md template
+# ECS Nginx Demo
+
+## Popis
+Tento projekt nasazuje nginx aplikaci na AWS ECS pomocí Terraform a GitHub Actions.
+
+### Architektura
+- AWS ECS Fargate cluster
+- Application Load Balancer
+- VPC s public subnety
+- CloudWatch logging
+
+### Nasazení
+1. Fork tento repository
+2. Nastavte GitHub Secrets:
+   - `AWS_ACCESS_KEY_ID`
+   - `AWS_SECRET_ACCESS_KEY`
+3. Vytvořte S3 bucket pro Terraform state
+4. Upravte backend konfiguraci v `main.tf`
+5. Push do main branch spustí nasazení
+
+### Použití
+Po úspěšném nasazení bude aplikace dostupná na URL z GitHub Actions výstupu.
+
+### Čištění
+```bash
+terraform destroy -auto-approve
+Aplikace URL
+    • Load Balancer: [URL ze situpu]
+
+---
+
+Odevzdání:
+- GitHub repository s Terraform kódem
+- GitHub Actions workflow
+- README s instrukcemi a ALB URL
+- Screenshot běžící aplikace
+
+Bonusové body:
+- Custom nginx stránka s vlastním obsahem
+- CloudWatch logging configuration
+- Multiple availability zones deployment
+
+Pomocné zdroje:
+```bash
+# Test dostupnosti
+curl http://your-alb-dns-name
+
+AWS CLI commands pro debugging
+aws ecs describe-services --cluster your-cluster-name
+aws ecs describe-tasks --cluster your-cluster-name
+aws logs describe-log-groups --log-group-name-prefix "/ecs/"
