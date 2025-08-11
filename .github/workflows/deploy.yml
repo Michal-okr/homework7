@@ -40,32 +40,29 @@ jobs:
     - name: Terraform Validate
       id: validate
       run: terraform validate -no-color
+    - name: Terraform Format Check
+      id: fmt
+      run: terraform fmt -check
+      continue-on-error: true
+      working-directory: terraform
+    - name: Terraform Init
+      id: init
+      run: terraform init
+      working-directory: terraform
+    - name: Terraform Validate
+      id: validate
+      run: terraform validate -no-color
+      working-directory: terraform
     - name: Terraform Plan
       id: plan
       if: github.event_name == 'pull_request'
       run: terraform plan -no-color -input=false
       continue-on-error: true
-    - name: Update Pull Request
-      uses: actions/github-script@v7
-      if: github.event_name == 'pull_request'
-      env:
-        PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
-      with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        script: |
-          const output = `#### Terraform Format and Style 🖌${{ steps.fmt.outcome }}\n#### Terraform Initialization ⚙️${{ steps.init.outcome }}\n#### Terraform Validation 🤖${{ steps.validate.outcome }}\n#### Terraform Plan 📖${{ steps.plan.outcome }}\n\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${process.env.PLAN}\n\`\`\`\n\n</details>\n\n*Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: output
-          })
-    - name: Terraform Plan Status
-      if: steps.plan.outcome == 'failure'
-      run: exit 1
+      working-directory: terraform
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       run: terraform apply -auto-approve -input=false
+      working-directory: terraform
     - name: Get Load Balancer URL
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       id: lb_url
@@ -73,6 +70,7 @@ jobs:
         LB_URL=$(terraform output -raw load_balancer_url)
         echo "url=$LB_URL" >> $GITHUB_OUTPUT
         echo "Load Balancer URL: $LB_URL"
+      working-directory: terraform
     - name: Test Application
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       run: |
@@ -85,6 +83,16 @@ jobs:
             break
           else
             echo "Attempt $i failed, retrying in 30 seconds..."
+            sleep 30
+          fi
+        done
+      working-directory: terraform
+    - name: Wait before destroy
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        echo "Waiting 15 minutes before destroying resources..."
+        sleep 900
+      working-directory: terraform
             sleep 30
           fi
         done
@@ -115,3 +123,4 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
       - name: Terraform Destroy
         run: terraform destroy -auto-approve -input=false
+        working-directory: terraform
