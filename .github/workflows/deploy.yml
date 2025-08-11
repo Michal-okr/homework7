@@ -89,6 +89,12 @@ jobs:
           fi
         done
 
+    - name: Wait before destroy
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        echo "Waiting 15 minutes before destroying resources..."
+        sleep 900
+
   destroy:
     name: 'Terraform Destroy'
     runs-on: ubuntu-latest
