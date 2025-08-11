@@ -78,7 +78,6 @@ jobs:
       run: |
         echo "Waiting 15 minutes before destroying resources..."
         sleep 900
-      working-directory: terraform
             sleep 30
           fi
         done
