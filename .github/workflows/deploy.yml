@@ -72,12 +72,7 @@ jobs:
             sleep 30
           fi
         done
-      working-directory: terraform
-    - name: Wait before destroy
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        echo "Waiting 1 minute before destroying resources..."
-        sleep 60
+    
 
   destroy:
     name: 'Terraform Destroy'
