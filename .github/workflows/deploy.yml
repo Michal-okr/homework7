@@ -78,15 +78,6 @@ jobs:
       run: |
         echo "Waiting 1 minute before destroying resources..."
         sleep 60
-            sleep 30
-          fi
-        done
-
-    - name: Wait before destroy
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: |
-        echo "Waiting 15 minutes before destroying resources..."
-        sleep 900
 
   destroy:
     name: 'Terraform Destroy'
